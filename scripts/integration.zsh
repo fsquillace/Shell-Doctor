@@ -7,7 +7,7 @@
 #     source ~/Projects/Shell\ Doctor/scripts/integration.zsh
 #
 # Requires the `doctor` executable from bin/ on PATH. When a command fails
-# inside a herdr terminal, the prompt hook prints:
+# inside a herdr terminal (herdr-app or herdr TUI), the prompt hook prints:
 #
 #     [Shell Doctor] Command failed (exit code: N)
 #       Diagnose with: doctor
@@ -34,6 +34,12 @@ typeset -g __shell_doctor_new_command=0
 
 __shell_doctor_clear() {
     __shell_doctor_exit_code=0
+}
+
+# True inside a herdr terminal: herdr-app (HC_TERMINAL_ID) or herdr TUI
+# (HERDR_ENV=1). Must mirror the backend detection in bin/doctor.
+__shell_doctor_in_herdr() {
+    [[ -n "${HC_TERMINAL_ID:-}" || "${HERDR_ENV:-}" == "1" ]]
 }
 
 # preexec runs after a command line is read and before it executes. It does
@@ -69,7 +75,7 @@ __shell_doctor_precmd() {
 
     # Advertise the failure only inside a herdr terminal, where doctor can
     # read this terminal's transcript.
-    if [[ -n "${HC_TERMINAL_ID:-}" ]]; then
+    if __shell_doctor_in_herdr; then
         printf '\n\033[1;31m[Shell Doctor]\033[0m Command failed (exit code: %d)\n' \
             "$exit_code"
         printf '  Diagnose with: doctor\n\n'

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Shell Doctor for herdr-core (hc)
+# Shell Doctor for herdr-app (hc) and herdr TUI (herdr)
 #
 #     doctor
 #
-# Reads this terminal's transcript with `hc read`, finds the last
-# [Shell Doctor] failure banner, and asks opencode to diagnose it.
+# Reads this terminal's transcript with `hc read` (herdr-app) or
+# `herdr pane read` (herdr TUI), finds the last [Shell Doctor] failure
+# banner, and asks opencode to diagnose it.
 #
 # The per-shell prompt hooks live in scripts/:
 #
@@ -17,11 +18,12 @@
 #
 # Configuration (export before running):
 #
-#   SHELL_DOCTOR_AGENT      opencode agent                      (default: plan)
-#   SHELL_DOCTOR_MODEL      opencode model                      (default: opencode's)
-#   SHELL_DOCTOR_LINES      terminal lines to read               (default: 200)
-#   SHELL_DOCTOR_MAX_BYTES  transcript size cap                  (default: 100000)
-#   SHELL_DOCTOR_TERMINAL   terminal to read instead of HC_TERMINAL_ID
+#   SHELL_DOCTOR_AGENT      opencode agent                       (default: plan)
+#   SHELL_DOCTOR_MODEL      opencode model                       (default: opencode's)
+#   SHELL_DOCTOR_LINES      terminal lines to read                (default: 200)
+#   SHELL_DOCTOR_MAX_BYTES  transcript size cap                   (default: 100000)
+#   SHELL_DOCTOR_TERMINAL   herdr-app terminal to read instead of HC_TERMINAL_ID
+#   SHELL_DOCTOR_PANE       herdr TUI pane to read instead of HERDR_PANE_ID
 
 set -u
 
@@ -35,8 +37,8 @@ SHELL_DOCTOR_MAX_BYTES="${SHELL_DOCTOR_MAX_BYTES:-100000}"
 
 usage() {
     printf 'Usage: doctor\n\n'
-    printf 'Read this terminal with hc read and ask opencode to find\n'
-    printf 'and diagnose the last failed command.\n'
+    printf 'Read this terminal transcript (herdr-app or herdr TUI) and ask\n'
+    printf 'opencode to find and diagnose the last failed command.\n'
 }
 
 die() {
@@ -76,29 +78,73 @@ if ! command -v opencode >/dev/null 2>&1; then
     die "opencode not found."
 fi
 
-if ! command -v hc >/dev/null 2>&1; then
-    die "hc not found."
-fi
+# ==========================================
+# Pick the terminal backend
+# ==========================================
 
-terminal=${SHELL_DOCTOR_TERMINAL:-${HC_TERMINAL_ID:-}}
+backend=""
+target=""
 
-if [[ -z "$terminal" ]]; then
-    printf '[Shell Doctor] This shell is not running inside a herdr terminal.\n' >&2
-    printf '  Start it with: hc run bash\n' >&2
-    printf '  Or set SHELL_DOCTOR_TERMINAL=<t7|name>.\n' >&2
+if [[ -n "${SHELL_DOCTOR_PANE:-}" ]]; then
+    backend=tui
+    target=$SHELL_DOCTOR_PANE
+elif [[ -n "${SHELL_DOCTOR_TERMINAL:-}" ]]; then
+    backend=app
+    target=$SHELL_DOCTOR_TERMINAL
+elif [[ "${HERDR_ENV:-}" == "1" ]]; then
+    backend=tui
+    target=${HERDR_PANE_ID:-}
+    if [[ -z "$target" ]]; then
+        die "This shell is inside herdr TUI but HERDR_PANE_ID is not set; set SHELL_DOCTOR_PANE=<w1:p1>."
+    fi
+elif [[ -n "${HC_TERMINAL_ID:-}" ]]; then
+    backend=app
+    target=$HC_TERMINAL_ID
+else
+    printf '[Shell Doctor] This shell is not running inside herdr-app or herdr TUI.\n' >&2
+    printf '  herdr-app: start it with: hc run bash\n' >&2
+    printf '  herdr TUI: run a shell inside a herdr pane\n' >&2
+    printf '  Or set SHELL_DOCTOR_TERMINAL=<t7|name> (herdr-app) or SHELL_DOCTOR_PANE=<w1:p1> (TUI).\n' >&2
     exit 1
 fi
 
+case "$backend" in
+    app)
+        backend_label="herdr-app"
+        if ! command -v hc >/dev/null 2>&1; then
+            die "hc not found (required by herdr-app)."
+        fi
+        read_command=(hc read --lines "$SHELL_DOCTOR_LINES" "$target")
+        read_fail="hc read failed for terminal $target."
+        read_empty="The transcript for herdr-app terminal $target is empty."
+        read_nobanner="No failure banner found in herdr-app terminal $target."
+        ;;
+    tui)
+        backend_label="herdr TUI"
+        if ! command -v herdr >/dev/null 2>&1; then
+            die "herdr not found (required by herdr TUI)."
+        fi
+        read_command=(herdr pane read "$target" --source recent-unwrapped
+            --lines "$SHELL_DOCTOR_LINES")
+        read_fail="herdr pane read failed for pane $target."
+        read_empty="The transcript for herdr TUI pane $target is empty."
+        read_nobanner="No failure banner found in herdr TUI pane $target."
+        ;;
+esac
+
+printf -v read_display '%q ' "${read_command[@]}"
+read_display=${read_display% }
+
 # Snapshot before printing anything else, so doctor's own output is not sent
 # to the model.
-if ! raw=$(hc read --lines "$SHELL_DOCTOR_LINES" "$terminal" 2>/dev/null); then
-    die "hc read failed for terminal $terminal."
+if ! raw=$("${read_command[@]}" 2>/dev/null); then
+    die "$read_fail"
 fi
 
 transcript=$(printf '%s\n' "$raw" | tail -c "$SHELL_DOCTOR_MAX_BYTES")
 
 if [[ -z "${transcript//[[:space:]]/}" ]]; then
-    die "The transcript for terminal $terminal is empty."
+    die "$read_empty"
 fi
 
 # The integrations print:
@@ -111,7 +157,7 @@ banner_line=$(printf '%s\n' "$transcript" |
     tail -n 1)
 
 if [[ -z "$banner_line" ]]; then
-    printf '[Shell Doctor] No failure banner found in terminal %s.\n' "$terminal" >&2
+    printf '[Shell Doctor] %s\n' "$read_nobanner" >&2
     printf '  Run a command that fails inside herdr, then run: doctor\n' >&2
     exit 1
 fi
@@ -128,7 +174,9 @@ printf '\n[Shell Doctor] Diagnostic context\n'
 printf '  Exit code:  %d\n' "$exit_code"
 printf '  Directory:  %s\n' "$PWD"
 printf '  System:     %s\n' "$context_system"
-printf '  Terminal:   %s (hc read --lines %d)\n' "$terminal" "$SHELL_DOCTOR_LINES"
+printf '  Backend:    %s\n' "$backend_label"
+printf '  Target:     %s\n' "$target"
+printf '  Read:       %s\n' "$read_display"
 printf '  Agent:      %s\n' "$SHELL_DOCTOR_AGENT"
 printf '  Model:      %s\n' "${SHELL_DOCTOR_MODEL:-opencode default}"
 printf '  Transcript: %d characters (limit %d bytes)\n\n' \
@@ -143,7 +191,7 @@ prompt hook prints this banner:
 
 The transcript below is the recent terminal output, read with:
 
-    hc read --lines ${SHELL_DOCTOR_LINES} ${terminal}
+    ${read_display}
 
 Find the LAST [Shell Doctor] Command failed banner in that transcript. The
 failed command is the shell input line that produced the output immediately

@@ -7,7 +7,7 @@
 #     source ~/Projects/Shell\ Doctor/scripts/integration.fish
 #
 # Requires the `doctor` executable from bin/ on PATH. When a command fails
-# inside a herdr terminal, the postexec hook prints:
+# inside a herdr terminal (herdr-app or herdr TUI), the postexec hook prints:
 #
 #     [Shell Doctor] Command failed (exit code: N)
 #       Diagnose with: doctor
@@ -27,6 +27,18 @@ if test $__shell_doctor_disabled = 0; and not set -q __SHELL_DOCTOR_FISH_INTEGRA
     # The last failure, kept in this shell only.
     set -g __shell_doctor_suppress 0
 
+    # True inside a herdr terminal: herdr-app (HC_TERMINAL_ID) or herdr TUI
+    # (HERDR_ENV=1). Must mirror the backend detection in bin/doctor.
+    function __shell_doctor_in_herdr
+        if set -q HC_TERMINAL_ID; and test -n "$HC_TERMINAL_ID"
+            return 0
+        end
+        if set -q HERDR_ENV; and test "$HERDR_ENV" = 1
+            return 0
+        end
+        return 1
+    end
+
     # fish_postexec does not fire for an empty prompt, so no duplicate-banner
     # guard is needed.
     function __shell_doctor_postexec --on-event fish_postexec
@@ -44,7 +56,7 @@ if test $__shell_doctor_disabled = 0; and not set -q __SHELL_DOCTOR_FISH_INTEGRA
 
         # Advertise the failure only inside a herdr terminal, where doctor can
         # read this terminal's transcript.
-        if set -q HC_TERMINAL_ID; and test -n "$HC_TERMINAL_ID"
+        if __shell_doctor_in_herdr
             printf '\n\033[1;31m[Shell Doctor]\033[0m Command failed (exit code: %d)\n' $exit_code
             printf '  Diagnose with: doctor\n\n'
         end
